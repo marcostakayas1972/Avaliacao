@@ -10,7 +10,7 @@ A camada gold é a camada final do pipeline de dados. Responsável por **agregar
 As tabelas gold são agregadas em **mês/ano** (`yyyy-MM`), pois análises de negócio raramente ocorrem no nível de dia. Isso reduz o volume de dados e melhora a performance das consultas no BI.
 
 ### Separação por dimensão
-Cada tabela gold foi construída ao redor de uma dimensão principal (canal/região, produto, cliente, entrega, atendimento), evitando tabelas genéricas demais que dificultam a manutenção e a legibilidade.
+Cada tabela gold foi construída ao redor de uma dimensão principal (produto, cliente, entrega, atendimento), evitando tabelas genéricas demais que dificultam a manutenção e a legibilidade.
 
 ### Manutenção do `status_order`
 O campo `status_order` é mantido em todas as golds para que pedidos **cancelados não mascarem os resultados**. Filtrar cancelados antes da agregação inflaria métricas como receita e ticket médio, distorcendo a análise real do negócio.
@@ -40,8 +40,8 @@ CACHE TABLE workspace.silver.dim_vendedores;
 CACHE TABLE workspace.silver.dim_canais;
 
 -- LIQUID CLUSTERING (exemplo futuro)
-CREATE OR REPLACE TABLE workspace.gold.gold_comercial_canal_regiao
-CLUSTER BY (ano_mes, canal_id, regional_code)
+CREATE OR REPLACE TABLE workspace.gold.gold_comercial_produto
+CLUSTER BY (order_date, category)
 AS SELECT ...
 ```
 
@@ -51,7 +51,6 @@ AS SELECT ...
 
 | Tabela | Fontes principais | Pergunta respondida |
 |---|---|---|
-| `gold.gold_comercial_canal_regiao` | `tb_pedidos_cabecalho` + `dim_vendedores` + `tb_pedidos_itens` | Como o negócio performou por canal e região? |
 | `gold.gold_comercial_produto` | `tb_pedidos_cabecalho` + `tb_pedidos_itens` + `dim_produto` | Quais categorias e produtos vendem mais? |
 | `gold.gold_comercial_clientes` | `tb_pedidos_cabecalho` + `dim_clientes` + `dim_vendedores` | Como cada cliente se comporta ao longo do tempo? |
 | `gold.gold_entrega_pedido` | `tb_entrega` + `tb_pedidos_cabecalho` | Onde estão os gargalos logísticos e de prazo? |
@@ -61,9 +60,10 @@ AS SELECT ...
 
 ## Detalhamento por tabela
 
-### `gold.gold_comercial_canal_regiao`
-- **Granularidade:** `ano_mes` + `status_order` + `canal_id` + `regional_code`
-- **Objetivo:** visão comercial segmentada por canal de venda e região — permite identificar quais combinações geram mais receita ou concentram cancelamentos
+### `gold.gold_comercial_produto`
+- **Fontes:** `silver.tb_pedidos_cabecalho` + `silver.tb_pedidos_itens` + `silver.dim_produto`
+- **Granularidade:** `order_date` (mês/ano) + `status_order` + `category` + `name`
+- **Objetivo:** visão comercial segmentada por categoria e produto — permite identificar os itens de maior e menor desempenho e acompanhar a evolução temporal de cada produto
 - **Métricas:**
 
 | Métrica | Descrição |
@@ -77,17 +77,11 @@ AS SELECT ...
 
 ---
 
-### `gold.gold_comercial_produto`
-- **Granularidade:** `ano_mes` + `status_order` + `category` + `name`
-- **Objetivo:** visão comercial segmentada por categoria e produto — permite identificar os itens de maior e menor desempenho
-- **Métricas:** mesmas de `gold_comercial_canal_regiao`, segmentadas por categoria e produto
-
----
-
 ### `gold.gold_comercial_clientes`
+- **Fontes:** `silver.tb_pedidos_cabecalho` + `silver.dim_clientes` + `silver.dim_vendedores`
 - **Granularidade:** `ano_mes` + `status_order` + `customer_id` + `canal_id` + `regional_code`
-- **Objetivo:** visão do comportamento de compra por cliente ao longo do tempo, cruzando perfil cadastral com performance comercial
-- **Observação:** usa `LEFT JOIN` partindo de `tb_pedidos_cabecalho` — inclui também as dimensões de canal e região via `dim_vendedores`, permitindo segmentar clientes por canal de atendimento
+- **Objetivo:** visão do comportamento de compra por cliente ao longo do tempo, cruzando perfil cadastral (segmento, porte, cidade, estado) com performance comercial e dimensões de canal e região
+- **Observação:** inclui `canal_id` e `regional_code` via `dim_vendedores` — permite segmentar clientes pelo canal pelo qual foram atendidos
 - **Métricas:**
 
 | Métrica | Descrição |
@@ -102,33 +96,53 @@ AS SELECT ...
 ---
 
 ### `gold.gold_entrega_pedido`
+- **Fontes:** `silver.tb_entrega` + `silver.tb_pedidos_cabecalho`
 - **Granularidade:** `ano_mes` + `status_order` + `carrier_name` + `carrier_mode` + `delivery_status` + `state` + `city`
-- **Objetivo:** visão operacional de entregas — permite identificar gargalos por transportadora, modal, região e status de entrega
-- **Normalização:** `delivery_status` traduzido via `CASE WHEN` (`delivered` → `Entregue`, `in_transit` → `Em Trânsito`, `atrasado` → `Atrasado`, `cancelled` → `Cancelado`)
+- **Objetivo:** visão operacional de entregas — permite identificar gargalos por transportadora, modal, região e status de entrega, além de medir cumprimento de prazo
+- **Normalização do `delivery_status`:**
+
+| Valor original | Valor normalizado |
+|---|---|
+| `delivered` | `Entregue` |
+| `in_transit` | `Em Trânsito` |
+| `atrasado` | `Atrasado` |
+| `cancelled` | `Cancelado` |
+| outros | `NULL` |
+
 - **Métricas:**
 
 | Métrica | Descrição |
 |---|---|
-| `total_entregas` | Contagem de entregas distintas |
+| `total_entregas` | Contagem de entregas distintas (`order_ref`) |
 | `custo_total_frete` | Soma do `cost` |
 | `custo_medio_frete` | Média do `cost` |
 | `media_dias_ate_expedicao` | Média de dias entre `order_date` e `shipped_at` |
 | `media_dias_transito` | Média de dias entre `shipped_at` e `delivered_at` |
 | `media_dias_ciclo_total` | Média de dias entre `order_date` e `delivered_at` |
 | `media_dias_atraso` | Média de dias entre `delivered_at` e `promised_date` |
-| `total_atrasados` | Soma de entregas com `delivered_at > promised_date` |
-| `perc_atrasados` | Percentual de entregas atrasadas |
+| `total_atrasados` | Entregas com `delivered_at > promised_date` |
+| `perc_atrasados` | Percentual de entregas atrasadas sobre o total |
 | `receita_bruta` | Soma do `gross_amount_num` do pedido vinculado |
 | `receita_liquida` | Soma do `net_amount` do pedido vinculado |
 
 ---
 
 ### `gold.gold_atendimentos_pedido`
+- **Fontes:** `silver.tb_atendimentos` + `silver.tb_pedidos_cabecalho`
 - **Granularidade:** `ano_mes` + `event_type` + `severity` + `status_atendimento` + `seller_id` + `status_order`
-- **Objetivo:** visão de atendimento e ocorrências — permite identificar os principais motivos de contato, criticidade dos tickets e tempo de resposta
+- **Objetivo:** visão de atendimento e ocorrências — permite identificar os principais motivos de contato, criticidade dos tickets, tempo de resposta e impacto financeiro dos pedidos afetados
 - **Normalizações aplicadas:**
-  - `event_type` traduzido (`Delay` → `Atraso`, `Refund` → `Reembolso`, `Complaint` → `Reclamação`, `Cancel_request` → `Cancelamento`)
-  - `status` normalizado (`Open` → `Aberto`, `Closed` → `Encerrado`)
+
+| Campo | Valor original | Valor normalizado |
+|---|---|---|
+| `event_type` | `Delay` | `Atraso` |
+| `event_type` | `Refund` | `Reembolso` |
+| `event_type` | `Troca` | `Troca` |
+| `event_type` | `Complaint` | `Reclamação` |
+| `event_type` | `Cancel_request` | `Cancelamento` |
+| `status` | `Open` | `Aberto` |
+| `status` | `Closed` | `Encerrado` |
+
 - **Métricas:**
 
 | Métrica | Descrição |
@@ -141,7 +155,7 @@ AS SELECT ...
 | `tickets_encerrados` | Tickets com status `Closed` |
 | `perc_abertos` | Percentual de tickets ainda abertos |
 | `tickets_criticos` | Tickets abertos há mais de 7 dias |
-| `media_dias_pedido_ate_ticket` | Média de dias entre `order_date` e `created_at` do ticket |
+| `media_dias_pedido_ate_ticket` | Média de dias entre `order_date` e abertura do ticket |
 | `receita_bruta` | Soma do `gross_amount_num` dos pedidos afetados |
 | `receita_liquida` | Soma do `net_amount` dos pedidos afetados |
 | `desconto_total` | Soma do `discount_amount` dos pedidos afetados |
