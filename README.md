@@ -97,6 +97,22 @@ sources/
 | Registro `CH06` sem vendedores | `dim_canais` | Removido da silver |
 | Registros inválidos em regiões | `dim_regioes` | Filtro `NOT IN ('sul', 'XX')` |
 
+## 🔍 Testes de qualidade
+
+Queries de validação executadas após a carga da camada silver para verificar se as chaves entre as tabelas possuem correspondentes.
+
+| Verificação | Total | Status |
+|---|---|---|
+| `pedidos_sem_cliente` | 8 | ⚠️ Pedidos sem cliente cadastrado na `dim_clientes` |
+| `itens_sem_produto` | 1 | ⚠️ Item sem produto correspondente na `dim_produto` |
+| `entregas_sem_pedido` | 1 | ⚠️ Entrega sem pedido correspondente em `tb_pedidos_cabecalho` |
+| `vendedores_sem_canal` | 1 | ⚠️ Vendedor com `canal_id` sem correspondente em `dim_canais` |
+| `pedidos_sem_vendedor` | 0 | ✅ |
+| `itens_sem_pedido` | 0 | ✅ |
+| `atendimentos_sem_pedido` | 0 | ✅ |
+| `vendedores_sem_regiao` | 0 | ✅ |
+
+> **Observação:** os registros com inconsistência foram **mantidos** nas tabelas silver — removê-los distorceria a análise, pois os fatos existiram. As métricas das tabelas gold podem apresentar `NULL` nas dimensões não encontradas para esses registros. Bill Inmon ensina colocar -3 nestes conteúdos `NULL`, mas optei em não complicar.
 ---
 
 ## Tabelas gold e perguntas respondidas
