@@ -62,8 +62,8 @@ AS SELECT ...
 
 ### `gold.gold_comercial_produto`
 - **Fontes:** `silver.tb_pedidos_cabecalho` + `silver.tb_pedidos_itens` + `silver.dim_produto`
-- **Granularidade:** `order_date` (mês/ano) + `status_order` + `category` + `name`
-- **Objetivo:** visão comercial segmentada por categoria e produto — permite identificar os itens de maior e menor desempenho e acompanhar a evolução temporal de cada produto
+- **Granularidade:** `order_date` (mês/ano) + `status_order` + `item_status` +  `category` + `name`
+- **Objetivo:** visão comercial segmentada por categoria e produto — permite identificar os itens de maior e menor desempenho e acompanhar a evolução temporal de cada produto. Item status permite verificar os itens cancelados.
 - **Métricas:**
 
 | Métrica | Descrição |
