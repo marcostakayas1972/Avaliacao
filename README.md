@@ -44,12 +44,12 @@ sources/
 
 ```
 /
-├── notebooks/
-│   ├── 01_bronze.py        # Ingestão das fontes brutas
-│   ├── 02_silver.py        # Transformações e qualidade
-│   ├── 03_gold.sql         # Tabelas analíticas agregadas
-│   └── 04_qualidade.py     # Validações e decisões sobre nulos
-├── docs/
+├── +
+│   ├── [01] - Carga_Bronze.py        # Ingestão das fontes brutas
+│   ├── [02] - Carga_Silver.py        # Transformações e qualidade
+│   ├── [03] - Limpeza_Silver.py      # Validações e decisões sobre nulos
+│   └── [04] - Carga_Gold.sql         # Tabelas analíticas agregadas
+├── +
 │   ├── README_bronze.md
 │   ├── README_silver.md
 │   └── README_gold.md
@@ -103,13 +103,12 @@ sources/
 
 | Tabela | Pergunta respondida |
 |---|---|
-| `gold_comercial_canal_regiao` | Como o negócio performou por canal e região? |
 | `gold_comercial_produto` | Quais categorias e produtos vendem mais? |
-| `gold_comercial_clientes` | Como cada cliente se comporta ao longo do tempo? |
+| `gold_comercial_clientes` | Como cada cliente se comporta ao longo do tempo? Como o negócio performou por canal e região?|
 | `gold_entrega_pedido` | Onde estão os gargalos logísticos e de prazo? |
 | `gold_atendimentos_pedido` | Quais são os principais motivos de ocorrência e criticidade? |
 
-Todas as tabelas permitem segmentação por **período, região, canal, categoria e status**, e estão prontas para consumo direto no BI sem necessidade de tratamentos adicionais.
+Todas as tabelas permitem segmentação por **período e status**, e estão prontas para consumo direto no BI sem necessidade de tratamentos adicionais.
 
 ---
 
@@ -117,19 +116,22 @@ Todas as tabelas permitem segmentação por **período, região, canal, categori
 
 - `customer_code` em `tb_atendimentos` está quase inteiramente nulo — impossibilita análise de atendimento por cliente
 - Vendedores inativos ou sem canal/região representam ~50% das vendas — mantidos para não distorcer o volume real
-- `Liquid Clustering` e hints de `BROADCAST`/`CACHE` não aplicados — identificados como melhorias futuras após definição dos padrões de consulta
-
+- Obviamente na versão free do databricks não dá pra implementar grandes melhorias como em um cluster pago
 ---
 
 ## Próximos passos recomendados
 
 - Implementar **Liquid Clustering** nas tabelas gold após análise dos padrões de consulta do BI
+- Analise profunda dos JOINS em busca de otimização em processamento distribuido, as vezes usar o **Photon** não resolve
 - Aplicar **BROADCAST** nas dimensões pequenas para otimizar performance dos joins
+- Analisar a entrada de dados em busca de reduzir o tempo, como por exemplo **spark.sql.files.maxPartitionBytes** ser aumentado dependendo do volume de entrada futura.
 - Investigar a origem do `customer_code` nulo nos atendimentos com a área de negócio
-- Evoluir o pipeline para **ingestão incremental** (Structured Streaming ou Delta CDF) em vez de overwrite total
+- Evoluir o pipeline para **ingestão incremental** (Structured Streaming ou DLT) em vez de overwrite total
 - Implementar **testes de qualidade automatizados** (ex: Great Expectations ou dbt tests) nas camadas silver e gold
 - Criar um notebook de **monitoramento de dados** com alertas para anomalias (volume, nulos, duplicatas)
-
+- **SCD2** pode ser implementado nas dimensões, mas prefiro modelar em **Data Vault** eliminando essa necessidade
+- Construi a camada silver com a **High-level API PySpark**, porque quem não conhece processamento distribuido acha que a **High-level API SQL** é lenta, pelo contrário SQL é mais rápida que o PySpark, porque ambas passam pelo **Catalyst Optimizer** para chegar no **Lower-Level**. Só que o PySpark ainda precisa ser convertido para SQL. PySpark é para ingestão, na transformação depende muito do conhecimento de processamento distribuido do engenheiro para decidir qual **High-level API** usar.
+- Pode ser necessário criar uma gold como fato geral com todas as dimensões ligadas à ela, para uma visão geral e ampla, mas a quantidade de linhas sobe bastante, nessa modelagem evitei ao máximo chegar perto do grão. 
 ---
 
 ## Ambiente
@@ -138,3 +140,57 @@ Todas as tabelas permitem segmentação por **período, região, canal, categori
 - **Linguagem:** Python / PySpark / Spark SQL
 - **Formato de armazenamento:** Delta Lake
 - **Versionamento:** GitHub
+
+## Modelo Entidade-Relacionamento
+
+```
++------------------+     +--------------------+     +------------------------+
+| dim_canais       |     | dim_vendedores     |     | tb_pedidos_cabecalho   |
+|------------------|     |--------------------|     |------------------------|
+| PK id_canal      |<----| FK canal_id        |<----| FK seller_id           |
+| nome_canal       |     | PK seller_id       |     | PK order_id            |
+| tipo_canal       |     | seller_name        |     | FK customer_code       |
+| ativo            |     | FK regional_code   |     | status_order           |
+| observacao       |     | hire_date          |     | order_date             |
++------------------+     | status             |     | promised_date          |
+                         +--------------------+     | gross_amount_num       |
++------------------+          ^                     | discount_amount        |
+| dim_regioes      |          |                     | net_amount             |       +--------------------+
+|------------------|          |   +-----------------| payment_details        | <---- | tb_atendimentos    |
+| PK regional_code |----------+   |                 | last_update            |       |--------------------|
+| regional_name    |              |                 +------------------------+       | PK ticket_id       |
+| state            |              |                       |           |              | FK order_id        |
+| manager_name     |              |                       | 1         | 1            | FK customer_code   |
+| active_flag      |              |                       |           |              | event_type         |
++------------------+              |                       v           v              | severity           |
+                                  |                       N           N              | status             |
++------------------+              |       +------------------+   +----------------+  | created_at         |
+| dim_clientes     |              |       | tb_pedidos_itens |   | tb_entrega     |  | metadata           |
+|------------------|              |       | -----------------|   |----------------|  +--------------------+
+| PK customer_id   |<-------------+       | FK order_id      |   | PK delivery_id |
+| nome_cliente     |  1           N       | PK item_seq      |   | FK order_ref   |
+| segmento         |                      | FK product_code  |   | carrier_name   |
+| porte            |                      | code             |   | carrier_mode   |
+| cidade           |                      | quantity         |   | delivery_status|
+| estado           |                      | unit_price       |   | shipped_at     |
+| status_cliente   |                      | total_item       |   | delivered_at   |
+| data_cadastro    |                      | item_status      |   | state          |
+| email            |                      +------------------+   | city           |
+| updated_at       |                              ^              | cost           |
++------------------+                              |              +----------------+
+                                                  |
++------------------+                              |
+| dim_produto      |                              |
+|------------------|                              |
+| PK product_id    |------------------------------+
+| name             |  1                        N
+| category         |
+| subcategory      |
+| status           |
+| list_price       |
+| currency         |
+| family           |
+| tags             |
+| updated_at       |
++------------------+
+```
